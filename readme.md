@@ -2,6 +2,8 @@
 
 一个“会记住你”的个人规划助手原型，合并学习与办公两类场景为统一演示：在每轮规划前主动检索记忆（显式/隐式偏好、承诺、约束、任务/事实），生成结构化计划更新 JSON，写回记忆并复核冲突与承接，逐步形成个性化与跨周期的优化。
 
+👉 新手入门教程：见 `tutorial.md`（手把手从零到跑通，含代码片段与故障排除）
+
 **为什么要记忆**
 - 降低负担：避免重复描述偏好与历史任务，减少遗漏。
 - 贯通周期：未完成事项自动承接，防止堆积与断裂。
@@ -36,26 +38,8 @@
   - `🔧 计划更新 JSON（解析渲染）`：结构化更新指令，使用 `BEGIN_PLAN_UPDATE` / `END_PLAN_UPDATE` 包裹，便于解析。
   - `🧪 校验`：轻量时间重叠冲突检查；`🧠 复核摘要`：写回后再次检索的简要说明。
 
-**网络与证书故障排除**
-- 若遇到 `urllib3.exceptions.SSLError: [SSL: UNEXPECTED_EOF_WHILE_READING]` 或连接重置：
-  - 确认 `MEMOS_BASE_URL` 带协议且正确，如 `https://memos.memtensor.cn/api/openmem/v1`。
-  - 代理/公司网络可能进行 TLS 拦截，尝试在 `.env` 设置 `MEMOS_VERIFY_SSL=false`（仅在可信网络下临时使用）。
-  - 调整超时：设置 `MEMOS_TIMEOUT=20`（秒），默认 20。慢网下适当提高。
-  - 我们已在客户端显式 `Connection: close` 与重试（429/5xx）以提升稳定性；仍异常可重试运行。
-  - 依赖版本建议升级：`pip install -U requests urllib3 certifi`。
-  - 如本地证书信任存在问题，可配置 `REQUESTS_CA_BUNDLE` 指向系统/自定义 CA 列表。
-
 **文件说明**
 - `demo.py`：统一演示入口（学习+办公），五轮对话、记忆检索与写回、冲突校验、完整 IO 与 JSON 展示（仅基于 `user_id` 隔离）。
 - `memos_client.py`：MemOS 客户端，仅使用 `user_id` 分区；在请求前自动确保 `user_id`；内置请求重试、超时与可配置 SSL 验证（`MEMOS_VERIFY_SSL`）。
 - `prompts.py`：统一场景系统提示 `SYSTEM_PROMPT_UNIFIED` 与 `build_unified_demo_prompt`。
 - `llm_client.py`：统一模型客户端。
-
-**已合并与清理**
-- 将 `demo/demo_case.md` 的学习场景叙述合并到本 README，并优化结构与运行指南。
-- 已移除旧的 `demo1.py` / `demo2.py`，统一以综合场景为入口。
-
-**已知限制与后续优化**
-- 重叠检测：当前更稳的解析格式为 `YYYY-MM-DDTHH:MM-HH:MM`（承诺 `time_range`）；分析文本中的非标准时间可能无法被准确解析。
-- 首次运行：若用户记忆较少，`参考记忆条目` 可能较为简略；随着写回与多轮运行会逐步丰富。
-- 可配置显示：如需关闭 JSON 或仅显示摘要，可在 `demo.py` 中调整打印逻辑（示例中已开启完整 IO 与 JSON 展示；记忆列表采用逐行显示）。
