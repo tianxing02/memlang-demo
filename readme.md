@@ -2,10 +2,6 @@
 
 **个性化日程任务管理系统（Personal Planner）**
 
-本文面向开发者，聚焦“如何一步步构建 MemOS × LangGraph「个人日程助手」。我们先分析业务场景，再说明为何选择 MemOS 与 LangGraph，最后给出分步代码解析。
-
-**github：** [https://github.com/tianxing02/memlang-demo](https://github.com/tianxing02/memlang-demo)
-
 在个人学习与工作管理中，用户希望拥有一个**能够理解自己习惯、自动规划并持续优化的日程助手**。  
 与传统的日历或任务清单不同，这个助手需要做到：
 
