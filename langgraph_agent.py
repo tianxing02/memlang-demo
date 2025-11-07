@@ -36,7 +36,7 @@ def build_agent():
 
     def ask_user(state):
         """读取用户输入，写入到状态的 query 字段。"""
-        user_query = input("👤 You: ")
+        user_query = input("👤 你：")
         state["query"] = user_query
         return state
 
@@ -50,7 +50,7 @@ def build_agent():
             ]
         )
         state["response"] = response.choices[0].message.content
-        print("🤖 Assistant:", state["response"])
+        print("🤖 助理：", state["response"])
         return state
 
     graph.add_node("ask_user", ask_user)
@@ -81,7 +81,7 @@ def build_agent_noninteractive():
                 "OpenAI API 认证失败：请检查 OPENAI_API_KEY 是否有效。"
                 "如使用自托管/代理服务，请确认 OPENAI_API_BASE 和模型配置。"
             )
-        print("🤖 Assistant:", state.get("response", ""))
+        print("🤖 助理：", state.get("response", ""))
         return state
 
     graph.add_node("generate_response", generate_response)

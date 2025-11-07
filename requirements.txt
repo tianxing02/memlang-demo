@@ -1,4 +1,6 @@
 langgraph
+fastapi
+uvicorn
 openai
 requests
 python-dotenv

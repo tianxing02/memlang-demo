@@ -2,49 +2,41 @@ import os
 import sys
 import json
 import re
-import uuid
 from datetime import datetime
 
 from memos_client import MemOSClient
 from llm_client import get_openai_client, get_openai_model
 from prompts import SYSTEM_PROMPT_UNIFIED, build_unified_demo_prompt
 
+
+# ----------------------------
+# 工具函数
+# ----------------------------
+
 def _parse_plan_update_json_from_content(content: str):
+    """从模型输出中提取 BEGIN_PLAN_UPDATE 到 END_PLAN_UPDATE 之间的 JSON"""
     try:
         tag_start = content.find('BEGIN_PLAN_UPDATE')
         tag_end = content.find('END_PLAN_UPDATE')
         if tag_start != -1 and tag_end != -1 and tag_end > tag_start:
             block = content[tag_start + len('BEGIN_PLAN_UPDATE'):tag_end]
             return json.loads(block.strip())
-        tag_start_old = content.find('BEGIN_MEMORY_WRITE')
-        tag_end_old = content.find('END_MEMORY_WRITE')
-        if tag_start_old != -1 and tag_end_old != -1 and tag_end_old > tag_start_old:
-            block = content[tag_start_old + len('BEGIN_MEMORY_WRITE'):tag_end_old]
-            return json.loads(block.strip())
         start = content.rfind('{')
         end = content.rfind('}')
         if start != -1 and end != -1 and end > start:
-            return json.loads(content[start:end+1])
+            return json.loads(content[start:end + 1])
     except Exception:
         return None
 
 
 def _extract_analysis_text(content: str) -> str:
+    """提取自由文本部分，用于正则分析"""
     idx = content.find('BEGIN_PLAN_UPDATE')
-    if idx == -1:
-        idx = content.find('BEGIN_MEMORY_WRITE')
     return content[:idx] if idx != -1 else content
 
 
-def _print_plan_update_json(plan_json: dict, title: str = None):
-    if title:
-        print(title)
-    print("BEGIN_PLAN_UPDATE")
-    print(json.dumps(plan_json, ensure_ascii=False, indent=2))
-    print("END_PLAN_UPDATE")
-
-
 def _print_conflict_check(plan_text: str, plan_json: dict):
+    """检测时间冲突"""
     def _to_minutes(hm: str) -> int:
         try:
             h, m = hm.split(":")
@@ -52,262 +44,255 @@ def _print_conflict_check(plan_text: str, plan_json: dict):
         except Exception:
             return -1
 
-    def _parse_plan_slots(text: str):
+    def _parse_slots(text: str):
+        pattern = re.compile(r"(\d{2}:\d{2})\s*[-–—]\s*(\d{2}:\d{2}).*")
         slots = []
-        pattern = re.compile(r"\*?\*?(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\*?\*?\s*(?:[:：]\s*)?(.*)")
         for line in text.splitlines():
             m = pattern.search(line)
             if m:
-                start_hm, end_hm, title = m.groups()
-                start = _to_minutes(start_hm)
-                end = _to_minutes(end_hm)
-                if start != -1 and end != -1 and end > start:
-                    slots.append({"start": start, "end": end, "title": title.strip()})
+                start, end = m.groups()
+                slots.append({
+                    "start": _to_minutes(start),
+                    "end": _to_minutes(end),
+                    "title": line[m.end():].strip() or "未命名任务"
+                })
         return slots
 
-    def _parse_commitments_today(pj: dict, today_date: str):
-        commits = pj.get("commitments") or []
+    def _parse_commitments(pj: dict):
         out = []
-        for cm in commits:
-            tr = cm.get("time_range") or ""
-            if today_date in tr and "T" in tr:
+        for cm in pj.get("commitments", []):
+            tr = cm.get("time_range", "")
+            if "T" in tr:
                 try:
                     _, hm = tr.split("T", 1)
-                    start_hm, end_hm = hm.split("-")
+                    start, end = hm.split("-")
                     out.append({
-                        "start": _to_minutes(start_hm),
-                        "end": _to_minutes(end_hm),
-                        "title": cm.get("title") or "承诺"
+                        "start": _to_minutes(start),
+                        "end": _to_minutes(end),
+                        "title": cm.get("title") or "固定安排"
                     })
                 except Exception:
                     pass
         return out
 
-    def _overlaps(a, b) -> bool:
-        return a["start"] < b["end"] and b["start"] < a["end"]
-
-    today_date = datetime.now().strftime("%Y-%m-%d")
-    plan_slots = _parse_plan_slots(plan_text)
-    commits_today = _parse_commitments_today(plan_json, today_date)
-
-    print("🧪 校验：时间重叠冲突检测（综合场景）")
-    if not commits_today:
-        print("- 未发现当日承诺或承诺未提供具体时段；跳过真实重叠检测。")
-    elif not plan_slots:
-        print("- 计划中未解析到时段；跳过真实重叠检测。")
-    else:
-        conflicts = []
-        for slot in plan_slots:
-            for cm in commits_today:
-                if _overlaps(slot, cm):
-                    conflicts.append((slot, cm))
-        if not conflicts:
-            print("- ✅ 未发现今日真实重叠冲突（计划时段与承诺时段无重叠）。")
-        else:
-            print(f"- ⚠️ 发现 {len(conflicts)} 个真实重叠冲突：")
-            for (slot, cm) in conflicts:
-                print(f"  · 计划『{slot['title']}』与承诺『{cm['title']}』重叠。建议前移或后移并保留缓冲。")
-
-
-def _print_memory_references(memory_context_json: str):
-    try:
-        obj = json.loads(memory_context_json or "{}")
-    except Exception:
-        # 当传入的是逐行文本而非 JSON 时，直接输出逐行内容
-        print("📚 参考记忆条目（逐行）：")
-        if memory_context_json:
-            print(memory_context_json)
-        else:
-            print("(空)")
+    plan_slots = _parse_slots(plan_text)
+    commitments = _parse_commitments(plan_json)
+    print("🧪 校验：时间冲突检测")
+    if not plan_slots or not commitments:
+        print("ℹ️ 无完整时段信息，跳过检测。")
         return
 
-    def collect(key: str):
-        results = []
-        def rec(x):
-            if isinstance(x, dict):
-                if key in x and isinstance(x[key], list):
-                    results.extend(x[key])
-                for v in x.values():
-                    rec(v)
-            elif isinstance(x, list):
-                for it in x:
-                    rec(it)
-        rec(obj)
-        return results
+    def overlaps(a, b):
+        return a["start"] < b["end"] and b["start"] < a["end"]
 
-    prefs = collect("preferences")
-    commits = collect("commitments")
-    constraints = collect("constraints")
-    facts = collect("facts")
-    tasks = collect("tasks")
+    conflicts = []
+    for s in plan_slots:
+        for c in commitments:
+            if overlaps(s, c):
+                conflicts.append((s, c))
 
-    print("📚 参考记忆条目：")
-    explicit = [p for p in prefs if (p.get("preference_type") or "").startswith("explicit")]
-    implicit = [p for p in prefs if (p.get("preference_type") or "").startswith("implicit")]
-    if explicit:
-        print("- 显式偏好：")
-        for p in explicit[:4]:
-            print(f"  · {p.get('preference')}")
-    if implicit:
-        print("- 隐式偏好：")
-        for p in implicit[:4]:
-            print(f"  · {p.get('preference')}")
-
-    if commits:
-        print("- 当日/近期承诺：")
-        for c in commits[:4]:
-            tr = c.get("time_range") or ""
-            title = c.get("title") or "承诺"
-            if tr:
-                print(f"  · {title}（时间：{tr}）")
-            else:
-                print(f"  · {title}")
+    if conflicts:
+        print(f"⚠️ 检测到 {len(conflicts)} 个冲突：")
+        for s, c in conflicts:
+            print(f"  ·『{s['title']}』与固定安排『{c['title']}』重叠。")
+    else:
+        print("✅ 未发现时间重叠，一切安排合理。")
 
 
-def _format_mem_ctx_lines(mem_result: dict) -> str:
-    container = mem_result if isinstance(mem_result, dict) else {}
-    data = container.get("data") if isinstance(container.get("data"), dict) else container
-    lines = []
+def _extract_tasks_from_text(text: str):
+    """回退：从自由文本中抽取时段和持续时间"""
+    tasks = []
+    pattern = re.compile(r"(\d{2}:\d{2})\s*[-–—]\s*(\d{2}:\d{2})\s*[:：]?\s*(.*)")
+    for line in text.splitlines():
+        m = pattern.search(line)
+        if m:
+            start, end, title = m.groups()
+            title = title.strip() or "未命名任务"
+            # 计算持续时间
+            sh, sm = map(int, start.split(":"))
+            eh, em = map(int, end.split(":"))
+            duration = (eh * 60 + em) - (sh * 60 + sm)
+            tasks.append({
+                "time": f"{start}-{end}",
+                "activity": title,
+                "duration": f"{duration} 分钟",
+                "priority": "中"
+            })
+    return tasks
 
-    def emit_list(name: str):
-        items = data.get(name)
-        if isinstance(items, list):
-            lines.append(f"{name}:")
-            for it in items:
-                if isinstance(it, (dict, list)):
-                    lines.append(json.dumps(it, ensure_ascii=False))
-                else:
-                    lines.append(str(it))
-            lines.append("")
 
-    emit_list("memory_detail_list")
-    emit_list("preference_detail_list")
-    return "\n".join(lines).strip()
-
+# ----------------------------
+# 初始化用户先验记忆
+# ----------------------------
 
 def seed_unified_scenario(memos: MemOSClient):
+    """初始化用户长期记忆（纯自然语言形式，系统自动抽取结构化信息）"""
     seed_msgs = [
-        {"role": "user", "content": "目标：每天学习 2 小时，准备政治和英语。"},
-        {"role": "user", "content": "工作日可能加班，晚间开始学习易疲劳，但一开始更偏好晚上学习。"},
-        {"role": "user", "content": json.dumps({
-            "commitments": [
-                {"title": "晨会", "status": "activated", "time_range": f"{datetime.now().strftime('%Y-%m-%d')}T09:30-10:00"},
-                {"title": "午间客户电话", "status": "activated", "time_range": f"{datetime.now().strftime('%Y-%m-%d')}T12:00-12:30"},
-                {"title": "晚间家庭聚餐", "status": "activated", "time_range": f"{datetime.now().strftime('%Y-%m-%d')}T20:30-21:30"}
-            ]
-        }, ensure_ascii=False)},
-        {"role": "user", "content": "团队例会每周三 10:00-11:00。客户季度汇报本周五 14:00-16:00。"},
-        {"role": "user", "content": "合规培训需本周内完成（强制性约束）。周四 15:00 牙医；健身偏好 07:00。"},
-        {"role": "user", "content": "待办：项目代码评审、准备客户汇报 PPT、撰写本周工作周报。"},
+        # 🎯 长期目标
+        {"role": "user", "content": "我的长期目标是每天学习2小时，准备政治和英语。"},
+
+        # 💡 明确偏好
+        {"role": "user", "content": "我更喜欢早上学习政治，周末集中学习英语。"},
+        {"role": "user", "content": "晚上学习效率较低，适合做复盘或轻松阅读。"},
+        {"role": "user", "content": "健身时间偏好早上7点，习惯晨练后开始一天的学习。"},
+
+        # 📆 固定会议与承诺
+        {"role": "user", "content": f"每个工作日早上9:30到10:00有晨会。"},
+        {"role": "user", "content": f"每天12:00到12:30有客户电话沟通。"},
+        {"role": "user", "content": f"晚上20:00到21:00一般是家庭聚餐时间，不安排学习。"},
+        {"role": "user", "content": f"每周三10:00到11:00有团队例会。"},
+        {"role": "user", "content": f"每周五14:00到16:00要参加季度汇报。"},
+        {"role": "user", "content": f"周四15:00到15:30要去看牙医。"},
+
+        # 📋 约束任务
+        {"role": "user", "content": "本周必须完成一次合规培训任务，请在合适时间安排。"},
+
+        # 🧠 待办事项
+        {"role": "user", "content": "我的待办任务包括：项目代码评审、准备客户汇报PPT、撰写本周工作周报。"},
     ]
+    print("🧠 初始用户记忆：")
+    for msg in seed_msgs:
+        print(msg)
     memos.add_conversation(seed_msgs)
+    print("✅ 已写入长期记忆（自然语言形式）：包含目标、偏好、会议与任务。\n")
 
-    fail_log = {"user_pattern": {"active_hours": "20:00-22:00", "actual_execution_rate": "45%"}, "failure_cause": "加班后开始学习易疲劳，执行率下降"}
-    memos.add_conversation([{"role": "user", "content": json.dumps(fail_log, ensure_ascii=False)}])
-    print("✅ 场景种子写入完成\n")
 
+# ----------------------------
+# 主执行逻辑
+# ----------------------------
 
 def run():
     memos = MemOSClient()
     client = get_openai_client()
     model = get_openai_model()
-    # 仅按 user_id 隔离，不再使用 conversation_id
 
-    print("🚀 统一综合示例")
-    print("👤 user_id：", memos.user_id)
-
+    print("🚀 启动一周日程规划模拟")
+    print(f"👤 user_id: {memos.user_id}")
     seed_unified_scenario(memos)
 
-    # 初始化记忆上下文占位；实际检索在每轮依据用户 query 进行
-    mem_ctx = ""
+    goal_text = "每天学习2小时，准备政治和英语"
+    history_messages, mem_ctx = [], ""
 
-    goal_text = "每天学习 2 小时，准备政治和英语"
-    history_messages = []
+    # 一周输入模拟（含具体上下文）
+    weekdays = [
+        (
+            "周一",
+            "📅 今天是周一。\n"
+            "状态一般，可能需要一点时间进入学习节奏。早上还是老习惯，晨练后做点轻学习就好。"
+            "政治那本笔记有些地方想复查，但不一定非今天。"
+            "这周打算重新整理一下英语听力素材，估计周三前能开始试试。"
+        ),
+        (
+            "周二",
+            "📅 今天是周二。\n"
+            "昨晚睡得晚，上午注意力可能分散一点。"
+            "汇报资料进度不错，不过细节部分还没打磨完，可能得提前留时间。"
+            "最近发现午饭后容易犯困，也许适合做点轻内容。"
+            "周四的那件事要记得，不想那天太赶。"
+        ),
+        (
+            "周三",
+            "📅 今天是周三。\n"
+            "早上健身完感觉状态比昨天好很多，应该能处理一些需要专注的内容。"
+            "昨天提到的汇报细节今天可以推进一部分。"
+            "另外，那份英语材料好像也可以开始动手听一听。"
+            "晚上别太紧凑，想留出一点时间看看新闻。"
+        ),
+        (
+            "周四",
+            "📅 今天是周四。\n"
+            "下午的事别忘了，可能要提前一点出门。"
+            "上午比较清闲，可以处理一些平时没空做的事情。"
+            "昨天的复盘笔记还没补完，有时间可以接着写。"
+            "听力那部分感觉还得多练几次，也许午饭后试试看。"
+        ),
+        (
+            "周五",
+            "📅 今天是周五。\n"
+            "今天比较关键，那份汇报终于到了。"
+            "早上尽量保持轻松的节奏，别太压自己。"
+            "如果这周有没收尾的事，别忘了留点时间整理。"
+            "周末可能会想多练英语，到时候再看看整体安排。"
+        )
+    ]
 
-    print("goal_text: ", goal_text)
-    def run_round(round_title: str, extra_instruction: str):
+
+
+
+    def run_day(day_name: str, user_instruction: str):
         nonlocal mem_ctx
-        print(f"\n🔁 {round_title}")
-        # 使用用户当轮的 query 进行记忆检索，并将记忆按“每元素一行”格式化
-        mem_obj_round_q = memos.search_memory(extra_instruction)
-        mem_ctx = _format_mem_ctx_lines(mem_obj_round_q)
+        print(f"\n📅 {day_name} 日程规划中...")
+        mem_obj = memos.search_memory(user_instruction)
+        # mem_ctx = json.dumps(mem_obj, ensure_ascii=False)
+        print("👤 用户指令：", user_instruction)
+        mem_ctx = ""
+        count = 1
+        for detail in mem_obj["data"]["memory_detail_list"]:
+            if detail["memory_value"].strip():
+                mem_ctx += str(count) + ": " + detail["memory_value"].replace("\n", "")[:300] + "\n"
+                count += 1
+
+        print("🧠 记忆上下文：\n", mem_ctx)
         user_prompt = build_unified_demo_prompt(goal_text, mem_ctx)
-        # _print_memory_references(mem_ctx)
-        print("🗣️ 用户指令：", extra_instruction)
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT_UNIFIED},
             *history_messages,
             {"role": "user", "content": user_prompt},
-            {"role": "user", "content": extra_instruction},
+            {"role": "user", "content": user_instruction},
         ]
         response = client.chat.completions.create(model=model, messages=messages)
         content = response.choices[0].message.content
-        print("🤖 系统输出：\n" + content)
+
+        # print("\n🤖 系统输出：")
+        # print(content)
+
+        plan_json = _parse_plan_update_json_from_content(content) or {}
+        pj = plan_json or {}
         analysis = _extract_analysis_text(content)
 
-        plan_json = _parse_plan_update_json_from_content(content)
-        # if plan_json is None:
-        #     print("⚠️ 本轮未解析到计划更新 JSON。")
-        # else:
-        #     _print_plan_update_json(plan_json, title="🔧 计划更新 JSON（解析渲染）")
-
-        pj = plan_json or {}
         _print_conflict_check(analysis, pj)
 
         write_messages = [
-            {"role": "user", "content": user_prompt},
-            {"role": "user", "content": extra_instruction},
+            {"role": "user", "content": user_instruction},
             {"role": "assistant", "content": content},
         ]
-        if plan_json is not None:
-            write_messages.append({"role": "assistant", "content": json.dumps({"PlanUpdate": plan_json}, ensure_ascii=False)})
         memos.add_conversation(write_messages)
-
         history_messages.extend(write_messages)
-        # 再次基于用户 query 检索最新记忆摘要，便于下一轮使用（按行格式化）
-        mem_obj_round = memos.search_memory(extra_instruction)
-        mem_ctx = _format_mem_ctx_lines(mem_obj_round)
 
-    run_round(
-        "第 1 轮：基础规划并避冲突",
-        (
-            "避免与晨会(09:30-10:00)、午间客户电话(12:00-12:30)、家庭聚餐(20:30-21:30)冲突。"
-            "晚间学习效率低，优先早晨/午间轻任务；周末集中英语 3h。若有承接任务请注明理由与来源。"
-        ),
-    )
+        print("\n📘 今日计划简表：")
 
-    run_round(
-        "第 2 轮：复杂变更与偏好裁决",
-        (
-            "本周三(07:00-22:00)出差不可用；周四牙医 15:00；合规培训本周必须完成；健身改到 19:00。"
-            "若周五客户汇报临时改档至 11:00-12:00，请整体调整；政治与英语冲突时优先英语，并说明裁决。"
-        ),
-    )
+        tasks = []
 
-    run_round(
-        "第 3 轮：复盘承接与偏好更新",
-        (
-            "根据前两轮执行，将低完成率任务 rollover；识别周末最高效学习时段并记为隐式偏好(如 Saturday 9:00-12:00)。"
-            "若家庭活动提前到 18:30-20:00，请适配；给出改进策略，但仍仅输出一个更新 JSON。"
-        ),
-    )
+        # --- 新版 JSON 结构解析 ---
+        try:
+            if isinstance(plan_json, dict):
+                # 优先匹配标准格式 {"today": {"tasks": [...]}}
+                if "today" in plan_json and isinstance(plan_json["today"], dict):
+                    tasks = plan_json["today"].get("tasks", [])
+                # 兼容 fallback 格式 {"tasks": [...]}
+                elif "tasks" in plan_json and isinstance(plan_json["tasks"], list):
+                    tasks = plan_json["tasks"]
+                # 兼容异常格式 {"schedule": [...]}
+                elif "schedule" in plan_json and isinstance(plan_json["schedule"], list):
+                    tasks = plan_json["schedule"]
+        except Exception as e:
+            print(f"⚠️ 解析 JSON 出错：{e}")
 
-    run_round(
-        "第 4 轮：别名混淆与互斥偏好裁决",
-        (
-            "‘客户汇报’又称‘季度回顾会’，保持周五改档；新增家长会 18:00-19:00。"
-            "将健身从 19:00 改回 07:00，但早晨深度工作偏好需保留；如冲突，以承诺优先并解释裁决。"
-        ),
-    )
+        # --- 打印输出 ---
+        if tasks:
+            for t in tasks:
+                time = t.get("time", "未指定时间")
+                activity = t.get("activity", t.get("title", "未命名任务"))
+                priority = t.get("priority", "中")
+                source = t.get("source", "")
+                print(f"  ⏰ {time:<15} | {activity:<20} | 优先级：{priority:<2} | 来源：{source}")
+        else:
+            print("⚠️ 未检测到任务时间安排，请检查模型输出。")
 
-    run_round(
-        "第 5 轮：跨周承接与去重",
-        (
-            "下周保留周三团队例会(10:00-11:00)与季度回顾会；若出现重复或重叠会议请去重与改期。"
-            "政治与英语安排需分时段交替，优先在午间安排政治，晚间避免高强度任务。"
-        ),
-    )
+    # 循环一周
+    for day, instruction in weekdays:
+        run_day(day, instruction)
 
 
 def main():

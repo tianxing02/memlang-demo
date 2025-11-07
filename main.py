@@ -30,21 +30,21 @@ def _summarize_memory(mem_result: dict) -> str:
     implicit = [p for p in prefs if p.get("preference_type") == "implicit_preference"]
 
     if explicit:
-        lines.append("- 显式偏好：")
+        lines.append("- 明确喜欢：")
         for p in explicit[:5]:
             pref = p.get("preference") or ""
             reason = (p.get("reasoning") or "")[:80]
             lines.append(f"  · {pref}" + (f"（理由：{reason}…）" if reason else ""))
 
     if implicit:
-        lines.append("- 隐式偏好：")
+        lines.append("- 习惯倾向：")
         for p in implicit[:5]:
             pref = p.get("preference") or ""
             reason = (p.get("reasoning") or "")[:80]
             lines.append(f"  · {pref}" + (f"（依据：{reason}…）" if reason else ""))
 
     if facts:
-        lines.append("- 近期事实/任务摘要：")
+        lines.append("- 近期事项/任务摘要：")
         for f in facts[:5]:
             title = f.get("title") or f.get("fact") or "事实"
             tr = f.get("time_range") or ""
@@ -66,7 +66,7 @@ def main():
     memos = MemOSClient()
     agent = build_agent()
 
-    print("🧭 Welcome to MemOS + LangGraph Demo (Personal Planner)")
+    print("🧭 欢迎使用个人日程助手演示（MemOS + LangGraph）")
 
     while True:
         # 每次调用执行一次：ask_user -> generate_response（无需额外编排）
@@ -82,11 +82,11 @@ def main():
             ]
             memos.add_conversation(messages)
 
-        # 查询历史上下文：当用户输入包含 "summary" 时，示例性检索最近任务摘要
-        if query and isinstance(query, str) and "summary" in query.lower():
+        # 查询历史上下文：当用户输入包含 "摘要" 或 "summary" 时，示例性检索最近任务摘要
+        if query and isinstance(query, str) and ("summary" in query.lower() or "摘要" in query):
             # 使用用户的 query 进行检索，仅基于 user_id
             res = memos.search_memory(query)
-            print("🧠 Memory Summary:\n" + _summarize_memory(res))
+            print("🧠 记忆摘要：\n" + _summarize_memory(res))
 
 if __name__ == "__main__":
     main()

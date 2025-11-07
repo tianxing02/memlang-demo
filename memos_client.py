@@ -94,14 +94,15 @@ class MemOSClient:
         headers = self._headers()
         data = {
             "user_id": self.user_id,
-            "messages": messages
+            "messages": messages,
+            "conversation_id": f"session_{uuid.uuid4().hex[:10]}"
         }
         try:
             res = self._session.post(url, headers=headers, json=data, timeout=self.timeout, verify=self.verify_ssl)
         except Exception as e:
-            raise Exception(f"Add conversation request failed: {e}")
+            raise Exception(f"写入对话请求失败：{e}")
         if res.status_code != 200:
-            raise Exception(f"Add conversation error: {res.status_code} {res.text}")
+            raise Exception(f"写入对话失败：{res.status_code} {res.text}")
         return res.json()
 
     def search_memory(self, query: str):
@@ -119,12 +120,13 @@ class MemOSClient:
         headers = self._headers()
         data = {
             "query": query,
-            "user_id": self.user_id
+            "user_id": self.user_id,
+            "conversation_id": f"session_{uuid.uuid4().hex[:10]}"
         }
         try:
             res = self._session.post(url, headers=headers, json=data, timeout=self.timeout, verify=self.verify_ssl)
         except Exception as e:
-            raise Exception(f"Search memory request failed: {e}")
+            raise Exception(f"检索记忆请求失败：{e}")
         if res.status_code != 200:
-            raise Exception(f"Search memory error: {res.status_code} {res.text}")
+            raise Exception(f"检索记忆失败：{res.status_code} {res.text}")
         return res.json()
